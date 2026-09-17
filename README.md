@@ -1,5 +1,7 @@
 # oxideav-aac
 
+The Sec-ant fork uses a cached RustFFT IMDCT for AAC synthesis. The decoder selects SIMD support at runtime through RustFFT and evaluates transforms in f64. Cargo can use the fork through a Git dependency on https://github.com/Sec-ant/oxideav-aac.
+
 [![CI](https://github.com/OxideAV/oxideav-aac/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-aac/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-aac.svg)](https://crates.io/crates/oxideav-aac) [![docs.rs](https://docs.rs/oxideav-aac/badge.svg)](https://docs.rs/oxideav-aac) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A pure-Rust **AAC** (Advanced Audio Coding) codec for the

@@ -40,6 +40,11 @@
 use crate::ics_info::{IcsInfo, WindowSequence, WindowShape};
 use crate::swb_offset::{FrameFamily, LONG_WINDOW_LEN, SHORT_WINDOW_LEN};
 use crate::Error;
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 /// `N` for a long-sequence transform (§4.6.11.3.1): 2 ×
 /// [`LONG_WINDOW_LEN`].
@@ -70,6 +75,12 @@ type Result<T> = core::result::Result<T, Error>;
 /// the spec attaches to the inverse transform; the energy-correcting
 /// window then follows in the per-sequence windowing step.
 pub(crate) fn imdct(spec: &[f64], n_transform: usize) -> Vec<f64> {
+    imdct_fft(spec, n_transform)
+}
+
+/// Direct §4.6.11.3.1 evaluation: one cosine sum per output sample.
+#[cfg(test)]
+fn imdct_direct(spec: &[f64], n_transform: usize) -> Vec<f64> {
     let half = n_transform / 2;
     debug_assert_eq!(spec.len(), half);
     let n0 = (half + 1) as f64 / 2.0;
@@ -85,6 +96,72 @@ pub(crate) fn imdct(spec: &[f64], n_transform: usize) -> Vec<f64> {
         *slot = scale * acc;
     }
     out
+}
+
+/// Every MDCT size the decoder/SSR paths can request (LC 1024/960,
+/// LD 512/480, short blocks, and their SSR variants).
+const IMDCT_SIZES: [usize; 12] = [64, 120, 128, 192, 240, 256, 480, 512, 960, 1024, 1920, 2048];
+
+struct ImdctPlan {
+    fft: Arc<dyn Fft<f64>>,
+    /// `e^{+i·ω·n0·(k+1/2)}` rotates transmitted coefficients into the
+    /// positive-frequency half of an inverse DFT.
+    phase: Vec<Complex<f64>>,
+    /// `e^{+i·ω·n/2}` demodulates the DFT output back to IMDCT samples.
+    output_phase: Vec<Complex<f64>>,
+}
+
+fn imdct_plans() -> &'static HashMap<usize, ImdctPlan> {
+    static PLANS: OnceLock<HashMap<usize, ImdctPlan>> = OnceLock::new();
+    PLANS.get_or_init(|| {
+        let mut planner = FftPlanner::<f64>::new();
+        IMDCT_SIZES
+            .into_iter()
+            .map(|n| (n, imdct_plan(&mut planner, n)))
+            .collect()
+    })
+}
+
+fn imdct_plan(planner: &mut FftPlanner<f64>, n: usize) -> ImdctPlan {
+    let half = n / 2;
+    let n0 = (half + 1) as f64 / 2.0;
+    let phase_step = 2.0 * core::f64::consts::PI / n as f64;
+    let phase = (0..half)
+        .map(|k| Complex::from_polar(1.0, phase_step * n0 * (k as f64 + 0.5)))
+        .collect();
+    let output_phase = (0..n)
+        .map(|index| Complex::from_polar(1.0, phase_step * index as f64 * 0.5))
+        .collect();
+    ImdctPlan {
+        fft: planner.plan_fft_inverse(n),
+        phase,
+        output_phase,
+    }
+}
+
+/// §4.6.11.3.1 evaluation through a cached, phase-rotated inverse DFT in f64.
+fn imdct_fft(spec: &[f64], n_transform: usize) -> Vec<f64> {
+    let half = n_transform / 2;
+    debug_assert_eq!(spec.len(), half);
+    let fallback;
+    let plan = match imdct_plans().get(&n_transform) {
+        Some(plan) => plan,
+        None => {
+            fallback = imdct_plan(&mut FftPlanner::<f64>::new(), n_transform);
+            &fallback
+        }
+    };
+    let mut spectrum = vec![Complex::<f64>::new(0.0, 0.0); n_transform];
+    for ((slot, &value), phase) in spectrum.iter_mut().zip(spec.iter()).zip(plan.phase.iter()) {
+        *slot = Complex::new(value * phase.re, value * phase.im);
+    }
+    plan.fft.process(&mut spectrum);
+    let scale = 2.0 / n_transform as f64;
+    spectrum
+        .iter()
+        .zip(plan.output_phase.iter())
+        .map(|(value, phase)| (value * phase).re * scale)
+        .collect()
 }
 
 /// §4.6.15.3.3 / §4.6.11.3.1 — the forward (analysis) MDCT for a
@@ -910,6 +987,20 @@ mod tests {
             let expect =
                 scale * (2.0 * core::f64::consts::PI / 8.0 * (idx as f64 + n0) * 0.5).cos();
             assert!((xv - expect).abs() < 1e-15, "n={idx}");
+        }
+    }
+
+    #[test]
+    fn fft_imdct_matches_direct_transform_for_every_decoder_size() {
+        for n in IMDCT_SIZES {
+            let spectrum: Vec<_> = (0..n / 2)
+                .map(|i| (0.137 * i as f64).sin() + (0.31 * i as f64).cos())
+                .collect();
+            let expected = imdct_direct(&spectrum, n);
+            let actual = imdct(&spectrum, n);
+            for (i, (a, b)) in actual.iter().zip(&expected).enumerate() {
+                assert!((a - b).abs() < 1e-11, "N={n}, sample={i}: {a} vs {b}");
+            }
         }
     }
 
