@@ -265,6 +265,7 @@ fn decode_cpe_frame(
             spectral: &right_spectral,
         };
         let joint = CpeJointStereo {
+            common_window: true,
             ms_mask_present,
             ms_used,
         };
@@ -273,10 +274,8 @@ fn decode_cpe_frame(
             .unwrap_or_else(|e| panic!("{context}: cpe decode: {e}"))
     } else {
         // Non-shared CPE: each channel carries its own ics_info, no M/S
-        // mask. The two channels may differ in window_sequence; the
-        // element decoder rejects a mismatch (the joint-stereo geometry
-        // is undefined), so a non-shared CPE that differs decodes each
-        // channel independently here.
+        // mask. Each channel uses its own window geometry and persistent
+        // synthesis state, even when the two window sequences differ.
         let left_body = IcsBody::parse(reader, aot, fs, false)
             .unwrap_or_else(|e| panic!("{context} ch0: ics_body: {e}"));
         let left_ics = left_body.ics_info.clone().expect("inline ics_info");

@@ -919,6 +919,7 @@ impl StreamDecoder {
                             spectral: &right_spectral,
                         };
                         let joint = CpeJointStereo {
+                            common_window: true,
                             ms_mask_present,
                             ms_used,
                         };
@@ -1083,6 +1084,7 @@ pub(crate) fn parse_cpe_family(
         let right_spectral = SpectralData::parse(reader, &ics, &right_body.section_data, fs)?;
         Ok(ParsedCpe {
             joint: CpeJointStereo {
+                common_window: true,
                 ms_mask_present,
                 ms_used,
             },
